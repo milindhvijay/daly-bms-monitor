@@ -186,7 +186,27 @@ class BMSMonitor:
         # Calculate average temperature
         temp_sensors = [data[key] for key in data if key.startswith("temp_") and key != "temp_sensors"]
         temp_avg = sum(temp_sensors) / len(temp_sensors) if temp_sensors else 0
-        output += f"Average Temperature: {temp_avg:.1f}°C\n\n"
+        output += f"Average Temperature: {temp_avg:.1f}°C\n"
+        
+        # Add additional data fields from batmon-ha
+        if "delta_voltage" in data:
+            output += f"Delta Voltage: {data['delta_voltage']:.3f} V\n"
+            
+        if "runtime" in data:
+            runtime_hours = data["runtime"] // 3600
+            runtime_minutes = (data["runtime"] % 3600) // 60
+            output += f"Runtime: {runtime_hours}h {runtime_minutes}m\n"
+            
+        if "balance_current" in data:
+            output += f"Balance Current: {data['balance_current']:.2f} A\n"
+            
+        # Add MOSFET states if available
+        if "charge_fet" in data:
+            output += f"Charge MOSFET: {'ON' if data['charge_fet'] else 'OFF'}\n"
+        if "discharge_fet" in data:
+            output += f"Discharge MOSFET: {'ON' if data['discharge_fet'] else 'OFF'}\n"
+            
+        output += "\n"
         
         # === Cell Voltages ===
         output += "=== Cell Voltages ===\n"
@@ -194,10 +214,24 @@ class BMSMonitor:
         cell_count = int(data.get("cell_count", 0))
         output += f"Number of cells: {cell_count}\n"
         
+        # Add cell statistics
+        cells = []
         for i in range(cell_count):
             cell_key = f"cell_voltage_{i}"
             if cell_key in data:
+                cells.append(data[cell_key])
                 output += f"Cell {i+1}: {data[cell_key]:.3f} V\n"
+        
+        if cells:
+            min_cell = min(cells)
+            max_cell = max(cells)
+            avg_cell = sum(cells) / len(cells)
+            delta = max_cell - min_cell
+            
+            output += f"\nMinimum: {min_cell:.3f} V\n"
+            output += f"Maximum: {max_cell:.3f} V\n"
+            output += f"Average: {avg_cell:.3f} V\n"
+            output += f"Delta: {delta:.3f} V\n"
         
         output += "\n"
         
@@ -209,10 +243,38 @@ class BMSMonitor:
             sensor_num = temp_key.split('_')[1]
             output += f"Sensor {sensor_num}: {data[temp_key]:.1f}°C\n"
         
+        # === BMS Status ===
+        output += "\n=== BMS Status ===\n"
+        
         # Problem codes if present
         if "problem_code" in data and data["problem_code"] != 0:
-            output += f"\nProblem Code: 0x{data['problem_code']:X}\n"
-        
+            problem_code = data["problem_code"]
+            output += f"Problem Code: 0x{problem_code:X}\n"
+            
+            # Decode problem code (batmon-ha style)
+            problems = []
+            # Each bit in the problem code represents a specific issue
+            if problem_code & 0x01: problems.append("Cell Overvoltage")
+            if problem_code & 0x02: problems.append("Cell Undervoltage")
+            if problem_code & 0x04: problems.append("Battery Overvoltage")
+            if problem_code & 0x08: problems.append("Battery Undervoltage")
+            if problem_code & 0x10: problems.append("Charging Overtemperature")
+            if problem_code & 0x20: problems.append("Charging Undertemperature")
+            if problem_code & 0x40: problems.append("Discharging Overtemperature")
+            if problem_code & 0x80: problems.append("Discharging Undertemperature")
+            if problem_code & 0x100: problems.append("Charging Overcurrent")
+            if problem_code & 0x200: problems.append("Discharging Overcurrent")
+            if problem_code & 0x400: problems.append("Short Circuit")
+            if problem_code & 0x800: problems.append("Front-end Detection IC Error")
+            if problem_code & 0x1000: problems.append("Software Lock MOS")
+            
+            if problems:
+                output += "Problems Detected:\n"
+                for problem in problems:
+                    output += f" - {problem}\n"
+        else:
+            output += "No problems detected\n"
+            
         output += "\nBMS update completed successfully!\n"
         output += "\n" + "-"*50 + "\n\n"  # Separator between entries
         
@@ -230,6 +292,42 @@ class BMSMonitor:
             if not data:
                 logger.warning("Received empty data from BMS")
                 return False
+                
+            # Enhance data with additional fields when available
+            # Calculated runtime (if charge/discharge rate is reasonably stable)
+            if "current" in data and "voltage" in data and "battery_level" in data:
+                current = abs(data["current"])
+                if current > 0:
+                    capacity_wh = data["voltage"] * data.get("cycle_charge", 0)
+                    remaining_wh = capacity_wh * (data["battery_level"] / 100)
+                    power = data["voltage"] * current
+                    
+                    if data.get("battery_charging", False):
+                        # Time to full
+                        remaining_wh_to_charge = capacity_wh - remaining_wh
+                        if power > 0:
+                            data["runtime"] = int((remaining_wh_to_charge / power) * 3600)
+                    else:
+                        # Time to empty
+                        if power > 0:
+                            data["runtime"] = int((remaining_wh / power) * 3600)
+            
+            # Calculate delta voltage if not provided
+            if "cell_count" in data and not "delta_voltage" in data:
+                cells = []
+                for i in range(int(data["cell_count"])):
+                    cell_key = f"cell_voltage_{i}"
+                    if cell_key in data:
+                        cells.append(data[cell_key])
+                if cells:
+                    data["delta_voltage"] = max(cells) - min(cells)
+            
+            # Extract MOSFET states if available
+            if hasattr(self.bms._bt, "_states") and self.bms._bt._states:
+                if "charging" in self.bms._bt._states:
+                    data["charge_fet"] = self.bms._bt._states["charging"]
+                if "discharging" in self.bms._bt._states:
+                    data["discharge_fet"] = self.bms._bt._states["discharging"]
                 
             # Format data for log file
             log_line = self.format_data_for_log(data)
@@ -271,10 +369,29 @@ class BMSMonitor:
         max_cell = max(cells) if cells else 0
         delta = max_cell - min_cell
         
+        # Include runtime estimation if available
+        runtime_str = ""
+        if "runtime" in data:
+            runtime_hours = data["runtime"] // 3600
+            runtime_minutes = (data["runtime"] % 3600) // 60
+            runtime_str = f" | {runtime_hours}h{runtime_minutes}m remaining"
+            
+        # Include MOSFETs status if available
+        fet_str = ""
+        if "charge_fet" in data or "discharge_fet" in data:
+            c_fet = "C" if data.get("charge_fet", False) else "c"
+            d_fet = "D" if data.get("discharge_fet", False) else "d"
+            fet_str = f" | FETs:{c_fet}{d_fet}"
+        
+        # Include problem indicator if problems detected
+        problem_str = ""
+        if "problem_code" in data and data["problem_code"] != 0:
+            problem_str = " | ⚠️ FAULT"
+            
         print(f"\r{datetime.datetime.now().strftime('%H:%M:%S')} - "
               f"V: {voltage:.2f}V | I: {current:.2f}A | P: {power:.2f}W | "
-              f"SoC: {soc:.1f}% | {status} | "
-              f"Cells: {min_cell:.3f}V-{max_cell:.3f}V (Δ{delta:.3f}V)", end="")
+              f"SoC: {soc:.1f}% | {status}{runtime_str}{fet_str} | "
+              f"Cells: {min_cell:.3f}V-{max_cell:.3f}V (Δ{delta:.3f}V){problem_str}", end="")
         sys.stdout.flush()
     
     async def monitor_loop(self):
