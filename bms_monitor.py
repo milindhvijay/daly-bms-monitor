@@ -77,14 +77,9 @@ class BMSMonitor:
         self._setup_output_file()
     
     def _setup_output_file(self):
-        """Setup the output file with header if it doesn't exist."""
-        file_exists = os.path.isfile(self.output_file)
-        
-        with open(self.output_file, 'a') as f:
-            if not file_exists:
-                # Write CSV header
-                header = "timestamp,voltage,current,power,soc,status,cells,min_cell,max_cell,delta_cell,temp_avg,cycle_count\n"
-                f.write(header)
+        """Setup the output file if needed."""
+        # No header needed for the new format
+        pass
     
     def _create_device(self):
         """Create a BLEDevice object for the BMS."""
@@ -158,37 +153,70 @@ class BMSMonitor:
                 logger.debug(f"Error during disconnect: {e}")
     
     def format_data_for_log(self, data: Dict[str, Any]) -> str:
-        """Format BMS data as a CSV line for the log file."""
+        """Format BMS data in a human-readable format for the log file."""
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Extract core values with defaults
-        voltage = data.get("voltage", 0)
-        current = data.get("current", 0)
-        power = data.get("power", 0)
-        soc = data.get("battery_level", 0)
-        status = "charging" if data.get("battery_charging", False) else "discharging"
-        cycles = data.get("cycles", 0)
+        # Start with timestamp as header
+        output = f"Data logged at: {timestamp}\n\n"
         
-        # Cell information
+        # === BMS General Information ===
+        output += "=== BMS General Information ===\n"
+        
+        voltage = data.get("voltage", 0)
+        output += f"Total Voltage: {voltage:.2f} V\n"
+        
+        current = data.get("current", 0)
+        output += f"Current: {current:.2f} A\n"
+        
+        power = data.get("power", 0)
+        output += f"Power: {power:.2f} W\n"
+        
+        soc = data.get("battery_level", 0)
+        output += f"State of Charge: {soc:.1f}%\n"
+        
+        status = "Charging" if data.get("battery_charging", False) else "Discharging"
+        output += f"Status: {status}\n"
+        
+        cycle_charge = data.get("cycle_charge", 0)
+        output += f"Cycle Charge: {cycle_charge:.2f} Ah\n"
+        
+        cycles = data.get("cycles", 0)
+        output += f"Cycle Count: {cycles}\n"
+        
+        # Calculate average temperature
+        temp_sensors = [data[key] for key in data if key.startswith("temp_") and key != "temp_sensors"]
+        temp_avg = sum(temp_sensors) / len(temp_sensors) if temp_sensors else 0
+        output += f"Average Temperature: {temp_avg:.1f}°C\n\n"
+        
+        # === Cell Voltages ===
+        output += "=== Cell Voltages ===\n"
+        
         cell_count = int(data.get("cell_count", 0))
-        cells = []
+        output += f"Number of cells: {cell_count}\n"
+        
         for i in range(cell_count):
             cell_key = f"cell_voltage_{i}"
             if cell_key in data:
-                cells.append(data[cell_key])
+                output += f"Cell {i+1}: {data[cell_key]:.3f} V\n"
         
-        min_cell = min(cells) if cells else 0
-        max_cell = max(cells) if cells else 0
-        delta_cell = max_cell - min_cell
+        output += "\n"
         
-        # Temperature
-        temp_sensors = [data[key] for key in data if key.startswith("temp_") and key != "temp_sensors"]
-        temp_avg = sum(temp_sensors) / len(temp_sensors) if temp_sensors else 0
+        # === Temperature Sensors ===
+        output += "=== Temperature Sensors ===\n"
         
-        # Format as CSV line
-        csv_line = f"{timestamp},{voltage:.2f},{current:.2f},{power:.2f},{soc:.1f},{status},{cell_count},{min_cell:.3f},{max_cell:.3f},{delta_cell:.3f},{temp_avg:.1f},{cycles}\n"
+        temp_keys = sorted([key for key in data.keys() if key.startswith("temp_")])
+        for temp_key in temp_keys:
+            sensor_num = temp_key.split('_')[1]
+            output += f"Sensor {sensor_num}: {data[temp_key]:.1f}°C\n"
         
-        return csv_line
+        # Problem codes if present
+        if "problem_code" in data and data["problem_code"] != 0:
+            output += f"\nProblem Code: 0x{data['problem_code']:X}\n"
+        
+        output += "\nBMS update completed successfully!\n"
+        output += "\n" + "-"*50 + "\n\n"  # Separator between entries
+        
+        return output
     
     async def log_data(self):
         """Fetch data from BMS and log it to file."""
@@ -211,7 +239,7 @@ class BMSMonitor:
                 f.write(log_line)
                 
             self.data_count += 1
-            logger.info(f"Data point #{self.data_count} logged successfully")
+            logger.info(f"Data point #{self.data_count} logged successfully to {self.output_file}")
             
             # Print summary to console
             self._print_data_summary(data)
