@@ -167,10 +167,19 @@ class DalyBMS:
         await asyncio.wait_for(self._data_event.wait(), timeout=self.TIMEOUT)
         self._data_event.clear()
 
-    async def connect(self) -> None:
-        """Connect to the BMS."""
+    async def connect(self, timeout=20, max_retries=3, use_scanner=False) -> None:
+        """Connect to the BMS with enhanced reliability options.
+        
+        Args:
+            timeout: Connection timeout in seconds
+            max_retries: Maximum number of connection retry attempts
+            use_scanner: Use scanner-based connection for better reliability
+        """
         if not self._bt.is_connected:
-            await self._bt.connect()
+            if use_scanner:
+                await self._bt._connect_with_scanner(timeout=timeout, max_scan_attempts=max_retries)
+            else:
+                await self._bt.connect(timeout=timeout, max_retries=max_retries)
             await self._bt.client.start_notify(
                 normalize_uuid_str(self.uuid_rx()), self._notification_handler
             )
