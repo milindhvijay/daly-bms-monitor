@@ -111,10 +111,21 @@ class BMSMonitor:
             # Use enhanced connection with reliability features
             await self.bms.connect(timeout=30, max_retries=3, use_scanner=self.use_scanner)
             
-            # Validate connection
-            is_valid = await validate_bms_connection(self.bms)
-            if not is_valid:
+            # Validate connection (using our own validation instead of validate_bms_connection)
+            if not self.bms._bt.is_connected:
                 logger.warning("Connection validation failed, will retry later")
+                await self.disconnect()
+                return False
+                
+            # Check services
+            try:
+                services = self.bms._bt.client.services
+                if not services:
+                    logger.warning("Connected but no services available")
+                    await self.disconnect()
+                    return False
+            except Exception as e:
+                logger.warning(f"Connection validation failed: {e}")
                 await self.disconnect()
                 return False
                 
