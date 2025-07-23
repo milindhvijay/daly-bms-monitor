@@ -192,16 +192,24 @@ class BtBms:
 
     def _on_disconnect(self, _client):
         """Handle disconnection events."""
+        # Skip warning if this was an intentional disconnect
+        if self._in_disconnect:
+            self.logger.debug('BMS %s disconnected intentionally after %.1fs', 
+                           self.__str__(), time.time() - self._connect_time)
+            return
+            
+        # Only log warning for unexpected disconnects
         if self.keep_alive and self._connect_time:
-            self.logger.warning('BMS %s disconnected after %.1fs!', self.__str__(), time.time() - self._connect_time)
+            self.logger.warning('BMS %s unexpectedly disconnected after %.1fs!', 
+                             self.__str__(), time.time() - self._connect_time)
 
         if self.is_connected:
-            self.logger.warning("%s _on_disconnect but is_connected=True")
+            self.logger.warning("%s _on_disconnect callback but is_connected=True", self.__str__())
 
         try:
             self._fetch_futures.clear()
         except Exception as e:
-            self.logger.warning('error clearing futures pool: %s', str(e) or type(e))
+            self.logger.warning('Error clearing futures pool: %s', str(e) or type(e))
 
     async def _connect_client(self, timeout):
         """Internal connect method with enhanced error handling."""
@@ -376,10 +384,20 @@ class BtBms:
 
     async def disconnect(self):
         """Disconnect from BMS."""
-        self._in_disconnect = True
-        await self.client.disconnect()
-        self._in_disconnect = False
-        self._fetch_futures.clear()
+        if not self.client.is_connected:
+            self.logger.debug("Disconnect called but client is already disconnected")
+            return
+            
+        try:
+            self._in_disconnect = True
+            self.logger.debug("Disconnecting from %s", self.client.address)
+            await self.client.disconnect()
+            self.logger.debug("Successfully disconnected from %s", self.client.address)
+        except Exception as e:
+            self.logger.warning("Error during disconnect: %s", e)
+        finally:
+            self._in_disconnect = False
+            self._fetch_futures.clear()
 
     def __str__(self):
         return f'{self.__class__.__name__}({self.client.address},{self.name})'
